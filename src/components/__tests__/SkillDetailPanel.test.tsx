@@ -1,0 +1,241 @@
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import SkillDetailPanel from '../SkillDetailPanel'
+import type { Skill, FileEntry } from '../../types'
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
+vi.mock('../../analytics', () => ({ capture: vi.fn(), captureException: vi.fn() }))
+
+import { invoke } from '@tauri-apps/api/core'
+const mockInvoke = vi.mocked(invoke)
+
+const skill: Skill = {
+  name: 'impeccable',
+  path: '~/.claude/skills/impeccable',
+  description: 'Polish frontend UI',
+  hasFullDescription: false,
+  active: true,
+  sourceId: 'skills_dir',
+}
+
+const fileTree: FileEntry = {
+  name: 'impeccable',
+  path: '~/.claude/skills/impeccable',
+  isDir: true,
+  extension: undefined,
+  children: [
+    { name: 'SKILL.md', path: '~/.claude/skills/impeccable/SKILL.md', isDir: false, extension: 'md', children: [] },
+    { name: 'lib', path: '~/.claude/skills/impeccable/lib', isDir: true, extension: undefined, children: [] },
+  ],
+}
+
+beforeEach(() => {
+  mockInvoke.mockReset()
+})
+
+describe('SkillDetailPanel', () => {
+  it('shows skeleton while loading', () => {
+    mockInvoke.mockReturnValue(new Promise(() => {}))
+    const { container } = render(<SkillDetailPanel skill={skill} onBack={vi.fn()} />)
+    expect(container.querySelector('.animate-pulse')).toBeInTheDocument()
+  })
+
+  it('renders skill name in header', async () => {
+    mockInvoke.mockResolvedValue(fileTree)
+    render(<SkillDetailPanel skill={skill} onBack={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('SKILL.md')).toBeInTheDocument())
+    expect(screen.getAllByText('impeccable').length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('renders file tree after invoke resolves', async () => {
+    mockInvoke.mockResolvedValue(fileTree)
+    render(<SkillDetailPanel skill={skill} onBack={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('SKILL.md')).toBeInTheDocument())
+    expect(screen.getByText('lib')).toBeInTheDocument()
+  })
+
+  it('shows error when invoke fails', async () => {
+    mockInvoke.mockRejectedValue(new Error('path not found'))
+    render(<SkillDetailPanel skill={skill} onBack={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText(/path not found/i)).toBeInTheDocument())
+  })
+
+  it('shows skill path at the bottom', async () => {
+    mockInvoke.mockResolvedValue(fileTree)
+    render(<SkillDetailPanel skill={skill} onBack={vi.fn()} />)
+    await waitFor(() => expect(screen.queryByText(/animate-pulse/)).not.toBeInTheDocument())
+    expect(screen.getByText(skill.path)).toBeInTheDocument()
+  })
+
+  it('clicking a markdown file renders it inline', async () => {
+    mockInvoke.mockResolvedValueOnce(fileTree)
+    mockInvoke.mockResolvedValue('# Rendered heading\n\nBody text')
+    render(<SkillDetailPanel skill={skill} onBack={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('SKILL.md')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('SKILL.md'))
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith('read_markdown_file', {
+        path: '~/.claude/skills/impeccable/SKILL.md',
+      })
+    )
+    // Rendered as markdown, not raw text
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Rendered heading' })).toBeInTheDocument()
+    )
+    expect(mockInvoke).not.toHaveBeenCalledWith('open_path', expect.anything())
+  })
+
+  it('non-markdown files are listed but cannot be opened', async () => {
+    const treeWithScript: FileEntry = {
+      ...fileTree,
+      children: [
+        ...fileTree.children,
+        { name: 'run.sh', path: '~/.claude/skills/impeccable/run.sh', isDir: false, extension: 'sh', children: [] },
+      ],
+    }
+    mockInvoke.mockResolvedValueOnce(treeWithScript)
+    mockInvoke.mockResolvedValue(undefined)
+    render(<SkillDetailPanel skill={skill} onBack={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('run.sh')).toBeInTheDocument())
+    const row = screen.getByText('run.sh').closest('button')!
+    expect(row).toBeDisabled()
+    fireEvent.click(row)
+    expect(mockInvoke).not.toHaveBeenCalledWith('open_path', expect.anything())
+    expect(mockInvoke).not.toHaveBeenCalledWith('read_markdown_file', expect.anything())
+  })
+
+  it('invokes read_skill_dir with correct path', async () => {
+    mockInvoke.mockResolvedValue(fileTree)
+    render(<SkillDetailPanel skill={skill} onBack={vi.fn()} />)
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalled())
+    expect(mockInvoke).toHaveBeenCalledWith('read_skill_dir', { path: skill.path })
+  })
+
+  // ── full description overlay ─────────────────────────────────────────────
+
+  it('shows full description button when hasFullDescription is true', async () => {
+    const richSkill = { ...skill, hasFullDescription: true }
+    mockInvoke.mockResolvedValue(fileTree)
+    render(<SkillDetailPanel skill={richSkill} onBack={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('SKILL.md')).toBeInTheDocument())
+    expect(screen.getByText('Show full description →')).toBeInTheDocument()
+  })
+
+  it('does not show full description button when hasFullDescription is false', async () => {
+    mockInvoke.mockResolvedValue(fileTree)
+    render(<SkillDetailPanel skill={skill} onBack={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('SKILL.md')).toBeInTheDocument())
+    expect(screen.queryByText('Show full description →')).not.toBeInTheDocument()
+  })
+
+  it('clicking Show full description opens overlay and fetches content', async () => {
+    const richSkill = { ...skill, hasFullDescription: true }
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'read_skill_dir') return Promise.resolve(fileTree)
+      if (cmd === 'get_skill_full_description') return Promise.resolve('# Full\nSome detail.')
+      return Promise.resolve(null)
+    })
+    render(<SkillDetailPanel skill={richSkill} onBack={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('Show full description →')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Show full description →'))
+    await waitFor(() => expect(screen.getByText('Show less')).toBeInTheDocument())
+    expect(mockInvoke).toHaveBeenCalledWith('get_skill_full_description', { path: skill.path })
+  })
+
+  it('Show less button closes the overlay', async () => {
+    const richSkill = { ...skill, hasFullDescription: true }
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'read_skill_dir') return Promise.resolve(fileTree)
+      if (cmd === 'get_skill_full_description') return Promise.resolve('# Full\nSome detail.')
+      return Promise.resolve(null)
+    })
+    render(<SkillDetailPanel skill={richSkill} onBack={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('Show full description →')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Show full description →'))
+    await waitFor(() => expect(screen.getByText('Show less')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Show less'))
+    await waitFor(() => expect(screen.queryByText('Show less')).not.toBeInTheDocument())
+  })
+
+  it('Escape key closes the description overlay', async () => {
+    const richSkill = { ...skill, hasFullDescription: true }
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'read_skill_dir') return Promise.resolve(fileTree)
+      if (cmd === 'get_skill_full_description') return Promise.resolve('# Full\nSome detail.')
+      return Promise.resolve(null)
+    })
+    render(<SkillDetailPanel skill={richSkill} onBack={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('Show full description →')).toBeInTheDocument())
+    fireEvent.click(screen.getByText('Show full description →'))
+    await waitFor(() => expect(screen.getByText('Show less')).toBeInTheDocument())
+    fireEvent.keyDown(window, { key: 'Escape', bubbles: true })
+    await waitFor(() => expect(screen.queryByText('Show less')).not.toBeInTheDocument())
+  })
+
+  it('Escape key does not call onBack when overlay is closed', async () => {
+    mockInvoke.mockResolvedValue(fileTree)
+    const onBack = vi.fn()
+    render(<SkillDetailPanel skill={skill} onBack={onBack} />)
+    await waitFor(() => expect(screen.getByText('SKILL.md')).toBeInTheDocument())
+    fireEvent.keyDown(window, { key: 'Escape', bubbles: true })
+    expect(onBack).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the cached install URL as Source when the skill has no source frontmatter', async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'read_skill_dir') return Promise.resolve(fileTree)
+      if (cmd === 'get_skill_cache_status') return Promise.resolve({
+        name: 'impeccable',
+        content: '...',
+        contentHash: 'abc',
+        installMethod: 'url',
+        installSource: 'https://github.com/someone/skills/blob/main/impeccable/SKILL.md',
+        cachedAt: 0,
+        updatedAt: 0,
+      })
+      return Promise.resolve(null)
+    })
+    render(<SkillDetailPanel skill={skill} onBack={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('Source')).toBeInTheDocument())
+    expect(screen.getByText('https://github.com/someone/skills/blob/main/impeccable/SKILL.md')).toBeInTheDocument()
+  })
+
+  it('does not show a Source link when the cached install method is local, not url', async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'read_skill_dir') return Promise.resolve(fileTree)
+      if (cmd === 'get_skill_cache_status') return Promise.resolve({
+        name: 'impeccable',
+        content: '...',
+        contentHash: 'abc',
+        installMethod: 'local',
+        installSource: '/Users/me/some/local/path',
+        cachedAt: 0,
+        updatedAt: 0,
+      })
+      return Promise.resolve(null)
+    })
+    render(<SkillDetailPanel skill={skill} onBack={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('SKILL.md')).toBeInTheDocument())
+    expect(screen.queryByText('Source')).not.toBeInTheDocument()
+  })
+
+  it('prefers frontmatter sourceUrl over the cached install URL', async () => {
+    const skillWithSource = { ...skill, sourceUrl: 'https://example.com/from-frontmatter' }
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'read_skill_dir') return Promise.resolve(fileTree)
+      if (cmd === 'get_skill_cache_status') return Promise.resolve({
+        name: 'impeccable',
+        content: '...',
+        contentHash: 'abc',
+        installMethod: 'url',
+        installSource: 'https://example.com/from-install',
+        cachedAt: 0,
+        updatedAt: 0,
+      })
+      return Promise.resolve(null)
+    })
+    render(<SkillDetailPanel skill={skillWithSource} onBack={vi.fn()} />)
+    await waitFor(() => expect(screen.getByText('https://example.com/from-frontmatter')).toBeInTheDocument())
+    expect(screen.queryByText('https://example.com/from-install')).not.toBeInTheDocument()
+  })
+})

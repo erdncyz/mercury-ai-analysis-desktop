@@ -1,0 +1,336 @@
+//! Multi-agent session sources. Each supported agent (Claude Code, Codex
+//! CLI, Gemini CLI) implements `SessionSource`; the aggregator merges their
+//! sessions into one newest-first stream for the UI.
+
+pub mod agy;
+pub mod codex;
+pub mod gemini;
+pub mod kiro;
+pub mod opencode;
+
+use super::history::{self, SessionDetail, SessionEntry};
+
+pub trait SessionSource: Sync {
+    fn agent_id(&self) -> &'static str;
+    /// Newest-first entries, at most `limit`.
+    fn list(&self, limit: usize) -> Vec<SessionEntry>;
+    fn get(&self, session_id: &str) -> Option<SessionDetail>;
+    /// Shell command that resumes work in `project` (id optional).
+    fn resume_command(&self, session_id: Option<&str>) -> String;
+    /// On-disk transcript backing this entry, used by the stats warm pass
+    /// for (mtime, size) staleness checks. None when the source can't map
+    /// an entry to a single file.
+    fn transcript_file(&self, entry: &SessionEntry) -> Option<std::path::PathBuf> {
+        let _ = entry;
+        None
+    }
+    /// The one file this entire source's sessions live in (e.g. OpenCode's
+    /// shared SQLite DB), if any — distinct from `transcript_file`, which is
+    /// per-entry. When set, the warm pass can skip re-listing and
+    /// re-parsing *every* session in this source on a call where nothing
+    /// changed, by checking this single file's (mtime, size) first, instead
+    /// of falling back to "no cheap way to detect unchanged, always
+    /// re-parse" per session (the correct fallback when there's truly
+    /// nothing to check, but wasteful when one file covers everything).
+    fn bulk_file(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+}
+
+struct ClaudeSource;
+
+impl SessionSource for ClaudeSource {
+    fn agent_id(&self) -> &'static str {
+        "claude"
+    }
+    fn list(&self, limit: usize) -> Vec<SessionEntry> {
+        history::list_sessions(limit, 0, None, None)
+    }
+    fn get(&self, session_id: &str) -> Option<SessionDetail> {
+        history::get_session(session_id).ok()
+    }
+    fn resume_command(&self, session_id: Option<&str>) -> String {
+        match session_id {
+            Some(id) => format!("claude --resume {id}"),
+            None => "claude".to_string(),
+        }
+    }
+    fn transcript_file(&self, entry: &SessionEntry) -> Option<std::path::PathBuf> {
+        let home = dirs::home_dir()?;
+        history::session_file(&home, &entry.project, &entry.session_id)
+    }
+}
+
+pub fn sources() -> Vec<&'static dyn SessionSource> {
+    vec![
+        &ClaudeSource,
+        &codex::CodexSource,
+        &gemini::GeminiSource,
+        &agy::AgySource,
+        &kiro::KiroSource,
+        &opencode::OpencodeSource,
+    ]
+}
+
+pub fn source_for(agent: &str) -> Option<&'static dyn SessionSource> {
+    sources().into_iter().find(|s| s.agent_id() == agent)
+}
+
+/// Merge all sources newest-first. `project_filter`/`search` are simple
+/// contains-filters (the frontend does its own richer client-side filtering).
+pub fn list_all(
+    limit: usize,
+    offset: usize,
+    project_filter: Option<&str>,
+    search: Option<&str>,
+) -> Vec<SessionEntry> {
+    let per_source = limit + offset;
+    let search_lower = search.map(|s| s.to_lowercase());
+    let mut all: Vec<SessionEntry> = sources()
+        .into_iter()
+        .flat_map(|s| s.list(per_source))
+        .filter(|e| {
+            if let Some(f) = project_filter {
+                if !e.project.contains(f) {
+                    return false;
+                }
+            }
+            if let Some(q) = &search_lower {
+                if !e.display.to_lowercase().contains(q.as_str()) {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+    all.sort_by_key(|e| std::cmp::Reverse(e.timestamp));
+    all.into_iter().skip(offset).take(limit).collect()
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentActivityPoint {
+    pub ts_ms: u64,
+    pub agent: String,
+    pub minutes: u64,
+}
+
+/// Every session's (last-activity timestamp, agent, estimated duration)
+/// since `since_ms`, across all sources — the frontend buckets these into
+/// calendar days itself (local timezone, no date-library dependency here).
+/// A generous per-source cap keeps a year of history bounded without needing
+/// per-source "since" support.
+pub fn agent_activity(since_ms: u64) -> Vec<AgentActivityPoint> {
+    const PER_SOURCE_CAP: usize = 4000;
+    sources()
+        .into_iter()
+        .flat_map(|s| s.list(PER_SOURCE_CAP))
+        .filter(|e| e.timestamp >= since_ms)
+        .map(|e| AgentActivityPoint {
+            ts_ms: e.timestamp,
+            agent: e.agent,
+            minutes: e.duration_minutes.unwrap_or(0),
+        })
+        .collect()
+}
+
+/// Fetch a session, trying the hinted agent's source first, then the rest.
+pub fn get_any(agent: Option<&str>, session_id: &str) -> Result<SessionDetail, String> {
+    if let Some(a) = agent {
+        if let Some(src) = source_for(a) {
+            if let Some(d) = src.get(session_id) {
+                return Ok(d);
+            }
+        }
+    }
+    for src in sources() {
+        if agent == Some(src.agent_id()) {
+            continue; // already tried
+        }
+        if let Some(d) = src.get(session_id) {
+            return Ok(d);
+        }
+    }
+    Err(format!("session {session_id} not found in any source"))
+}
+
+// ── shared helpers for sources ────────────────────────────────────────────────
+
+/// Parse an RFC3339 UTC timestamp ("2026-06-11T21:39:19.749Z") to unix ms.
+/// Tolerant: returns None on anything malformed. No chrono dependency.
+pub(crate) fn rfc3339_to_ms(ts: &str) -> Option<u64> {
+    let b = ts.as_bytes();
+    if b.len() < 19 {
+        return None;
+    }
+    let num = |s: &str| s.parse::<i64>().ok();
+    let year = num(ts.get(0..4)?)?;
+    let month = num(ts.get(5..7)?)?;
+    let day = num(ts.get(8..10)?)?;
+    let hour = num(ts.get(11..13)?)?;
+    let min = num(ts.get(14..16)?)?;
+    let sec = num(ts.get(17..19)?)?;
+    // Optional fractional seconds
+    let mut millis = 0i64;
+    if ts.get(19..20) == Some(".") {
+        let frac: String = ts[20..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if !frac.is_empty() {
+            let scaled = format!("{:0<3}", &frac[..frac.len().min(3)]);
+            millis = scaled.parse().unwrap_or(0);
+        }
+    }
+    // days_from_civil (Howard Hinnant)
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    let secs = days * 86400 + hour * 3600 + min * 60 + sec;
+    u64::try_from(secs * 1000 + millis).ok()
+}
+
+/// True when the file was modified in the last 5 minutes (shared "live" rule).
+pub(crate) fn is_recently_modified(path: &std::path::Path) -> bool {
+    path.metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|m| std::time::SystemTime::now().duration_since(m).ok())
+        .map(|age| age.as_secs() < 300)
+        .unwrap_or(false)
+}
+
+pub(crate) fn file_mtime_ms(path: &std::path::Path) -> Option<u64> {
+    path.metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+}
+
+/// Estimated active duration from a session's first and last known activity
+/// timestamps (ms). This is a span, not tracked wall-clock time — it counts
+/// idle gaps between turns as "active" — so it's capped at a plausible
+/// single-sitting ceiling to keep an overnight-idle session from reporting
+/// as 10 hours of work.
+pub(crate) const MAX_SESSION_SPAN_MIN: u64 = 240;
+
+pub(crate) fn session_duration_minutes(first_ms: u64, last_ms: u64) -> Option<u64> {
+    if first_ms == 0 || last_ms <= first_ms {
+        return None;
+    }
+    let minutes = (last_ms - first_ms) / 60_000;
+    if minutes == 0 {
+        return None;
+    }
+    Some(minutes.min(MAX_SESSION_SPAN_MIN))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{rfc3339_to_ms, session_duration_minutes, MAX_SESSION_SPAN_MIN};
+
+    #[test]
+    fn parses_rfc3339_timestamps() {
+        // 2026-06-11T21:39:19.749Z
+        let ms = rfc3339_to_ms("2026-06-11T21:39:19.749Z").unwrap();
+        assert_eq!(ms % 1000, 749);
+        // Epoch sanity: 2020-01-01T00:00:00Z = 1577836800
+        assert_eq!(
+            rfc3339_to_ms("2020-01-01T00:00:00Z").unwrap(),
+            1_577_836_800_000
+        );
+        assert!(rfc3339_to_ms("garbage").is_none());
+    }
+
+    #[test]
+    fn session_duration_spans_first_to_last() {
+        let first = 1_000_000_000_000u64;
+        let last = first + 45 * 60_000; // +45 min
+        assert_eq!(session_duration_minutes(first, last), Some(45));
+    }
+
+    #[test]
+    fn session_duration_caps_at_max_span() {
+        let first = 1_000_000_000_000u64;
+        let last = first + 10 * 60 * 60_000; // +10h, an overnight-idle session
+        assert_eq!(
+            session_duration_minutes(first, last),
+            Some(MAX_SESSION_SPAN_MIN)
+        );
+    }
+
+    #[test]
+    fn session_duration_none_for_missing_or_backwards_timestamps() {
+        assert_eq!(session_duration_minutes(0, 1_000_000), None);
+        assert_eq!(session_duration_minutes(2_000_000, 1_000_000), None);
+        assert_eq!(session_duration_minutes(1_000_000, 1_000_000), None);
+    }
+}
+
+#[cfg(test)]
+mod smoke {
+    // Throwaway: runs against the real home dir. `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn real_sources_smoke() {
+        let entries = super::list_all(30, 0, None, None);
+        let mut counts = std::collections::HashMap::new();
+        for e in &entries {
+            *counts.entry(e.agent.clone()).or_insert(0) += 1;
+        }
+        println!("agents in top 30: {counts:?}");
+        for e in entries.iter().take(8) {
+            println!(
+                "[{}] {} | {} | prompts:{} tokens:{} duration_min:{:?}",
+                e.agent,
+                e.project_name,
+                e.display.chars().take(40).collect::<String>(),
+                e.prompt_count,
+                e.total_tokens,
+                e.duration_minutes
+            );
+        }
+        for agent in ["gemini", "codex"] {
+            if let Some(e) = entries.iter().find(|e| e.agent == agent) {
+                let d = super::get_any(Some(agent), &e.session_id);
+                println!("{agent} get -> messages: {:?}", d.map(|d| d.messages.len()));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod smoke2 {
+    use super::SessionSource;
+    #[test]
+    #[ignore]
+    fn gemini_codex_direct() {
+        let t0 = std::time::Instant::now();
+        let g = super::gemini::GeminiSource.list(10);
+        println!("gemini list(10) -> {} in {:?}", g.len(), t0.elapsed());
+        for e in g.iter().take(5) {
+            println!(
+                "  [{}] {} | {}",
+                e.project_name,
+                e.display.chars().take(50).collect::<String>(),
+                e.prompt_count
+            );
+        }
+        let t1 = std::time::Instant::now();
+        let c = super::codex::CodexSource.list(10);
+        println!("codex list(10) -> {} in {:?}", c.len(), t1.elapsed());
+        for e in c.iter().take(3) {
+            println!(
+                "  [{}] {} | tokens:{}",
+                e.project_name,
+                e.display.chars().take(50).collect::<String>(),
+                e.total_tokens
+            );
+        }
+    }
+}

@@ -1,0 +1,314 @@
+@import "tailwindcss";
+
+/* ── Geist fonts ──────────────────────────────────────── */
+@font-face {
+  font-family: 'Geist';
+  font-weight: 400;
+  font-style: normal;
+  src: url('../node_modules/geist/dist/fonts/geist-sans/Geist-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Geist';
+  font-weight: 500;
+  font-style: normal;
+  src: url('../node_modules/geist/dist/fonts/geist-sans/Geist-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Geist';
+  font-weight: 600;
+  font-style: normal;
+  src: url('../node_modules/geist/dist/fonts/geist-sans/Geist-SemiBold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Geist Mono';
+  font-weight: 400;
+  font-style: normal;
+  src: url('../node_modules/geist/dist/fonts/geist-mono/GeistMono-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Geist Mono';
+  font-weight: 500;
+  font-style: normal;
+  src: url('../node_modules/geist/dist/fonts/geist-mono/GeistMono-Medium.woff2') format('woff2');
+}
+
+@theme {
+  --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono', 'SF Mono', ui-monospace, monospace;
+}
+
+/* Dark mode via .dark class on <html> */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ── Theme tokens ─────────────────────────────────────── */
+:root {
+  --c-bg:         #ffffff;
+  --c-surface:    #f4f4f5;
+  --c-surface-1:  #f4f4f5;
+  --c-surface-2:  #e4e4e7;
+  --c-bg-sub:     #f4f4f5;
+  --c-hover:      #f4f4f5;
+  --c-border:     rgba(228,228,231,0.9);
+  --c-border-sub: rgba(228,228,231,0.6);
+  --c-text:       #18181b;
+  --c-text-1:     #18181b;
+  --c-text-2:     #71717a;
+  --c-text-3:     #a1a1aa;
+  --c-input:      rgba(244,244,245,0.9);
+  --c-track:      #d4d4d8;
+  --c-skeleton:   #e4e4e7;
+  --c-accent:     #6366f1;
+}
+
+.dark {
+  --c-bg:         #09090b;
+  --c-surface:    #18181b;
+  --c-surface-1:  #18181b;
+  --c-surface-2:  #27272a;
+  --c-bg-sub:     #18181b;
+  --c-hover:      rgba(255,255,255,0.025);
+  --c-border:     rgba(39,39,42,0.8);
+  --c-border-sub: rgba(39,39,42,0.5);
+  --c-text:       #e4e4e7;
+  --c-text-1:     #e4e4e7;
+  --c-text-2:     #d4d4d8;
+  --c-text-3:     #a1a1aa;
+  --c-input:      rgba(39,39,42,0.6);
+  --c-track:      #3f3f46;
+  --c-skeleton:   #27272a;
+  --c-accent:     #6366f1;
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: transparent;
+  margin: 0;
+}
+
+.overflow-y-auto {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.overflow-y-auto::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes splash-float {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-8px); }
+}
+@keyframes splash-glow {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50%       { opacity: 0.6; transform: scale(1.08); }
+}
+@keyframes splash-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes splash-tip-fade {
+  0%   { opacity: 0; transform: translateY(4px); }
+  15%  { opacity: 1; transform: translateY(0); }
+  80%  { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-4px); }
+}
+@keyframes splash-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+@keyframes splash-scroll {
+  0%   { transform: translateX(100vw); }
+  100% { transform: translateX(-100%); }
+}
+.splash-float   { animation: splash-float   3.2s ease-in-out infinite; }
+.splash-glow    { animation: splash-glow    3.2s ease-in-out infinite; }
+.splash-fade-in { animation: splash-fade-in 0.5s ease-out forwards; }
+.splash-out     { animation: splash-out     0.3s ease-out forwards; }
+
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 180ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes toast-in {
+  from { transform: translateX(20px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+.animate-toast-in {
+  animation: toast-in 200ms ease forwards;
+}
+
+@keyframes tooltip-in {
+  from { opacity: 0; transform: translateY(3px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)   scale(1);    }
+}
+
+.animate-tooltip-in {
+  animation: tooltip-in 120ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes slide-up {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+
+.animate-slide-up {
+  animation: slide-up 280ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+
+/* Toggle animations */
+@keyframes toggle-enable {
+  0%   { transform: scale(1);    opacity: 1; }
+  20%  { transform: scale(0.80); opacity: 0.6; }
+  55%  { transform: scale(1.22); opacity: 1; }
+  75%  { transform: scale(0.96); }
+  100% { transform: scale(1); }
+}
+@keyframes toggle-disable {
+  0%   { transform: scale(1);    opacity: 1; }
+  25%  { transform: scale(0.85); opacity: 0.6; }
+  65%  { transform: scale(1.10); opacity: 1; }
+  100% { transform: scale(1); }
+}
+@keyframes toggle-confirm {
+  0%   { opacity: 0; transform: scale(0.5); }
+  55%  { opacity: 1; transform: scale(1.2); }
+  100% { opacity: 1; transform: scale(1); }
+}
+@keyframes toggle-busy {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}
+
+.animate-toggle-enable  { animation: toggle-enable  0.35s cubic-bezier(0.34, 1.56, 0.64, 1) forwards; }
+.animate-toggle-disable { animation: toggle-disable 0.28s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards; }
+.animate-toggle-confirm { animation: toggle-confirm 0.30s cubic-bezier(0.34, 1.56, 0.64, 1) forwards; }
+.animate-toggle-busy    { animation: toggle-busy    0.55s ease-in-out infinite; }
+
+/* ── Home tile icon animations ── */
+@keyframes neuron-pulse {
+  0%,100%  { opacity:.18; transform:scale(.85); box-shadow:none }
+  50%      { opacity:1;   transform:scale(1.15); box-shadow:0 0 5px 2px rgba(16,185,129,.5) }
+}
+@keyframes line-fill {
+  0%   { transform:scaleX(0); opacity:.2 }
+  15%  { transform:scaleX(1); opacity:1  }
+  80%  { transform:scaleX(1); opacity:1  }
+  100% { transform:scaleX(0); opacity:.2 }
+}
+@keyframes conn-travel {
+  0%   { clip-path:inset(0 100% 0 0);   opacity:0   }
+  10%  { opacity:.9 }
+  50%  { clip-path:inset(0 0%   0 0)                }
+  80%  { opacity:.9 }
+  100% { clip-path:inset(0 0    0 100%); opacity:0  }
+}
+@keyframes node-ping {
+  0%   { transform:translateY(-50%) scale(1);   opacity:.7 }
+  70%  { transform:translateY(-50%) scale(2.2); opacity:0  }
+  100% { transform:translateY(-50%) scale(2.2); opacity:0  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-tooltip-in { animation: none; }
+  .animate-toggle-enable, .animate-toggle-disable, .animate-toggle-confirm, .animate-toggle-busy { animation: none; }
+  * { transition-duration: 0ms !important; animation-duration: 0ms !important; }
+}
+
+/* Skill markdown rendering */
+.skill-md {
+  user-select: text;
+  -webkit-user-select: text;
+}
+.skill-md h1, .skill-md h2, .skill-md h3,
+.skill-md p, .skill-md ul, .skill-md ol,
+.skill-md pre, .skill-md blockquote, .skill-md hr {
+  display: block; /* Tailwind preflight strips block display; restore it */
+}
+.skill-md h1, .skill-md h2, .skill-md h3 {
+  font-weight: 600;
+  color: var(--c-text);
+  margin: 0.75em 0 0.25em;
+}
+.skill-md h1 { font-size: 15px; }
+.skill-md h2 { font-size: 14px; }
+.skill-md h3 { font-size: 13px; color: var(--c-text-2); }
+.skill-md p  { margin: 0.4em 0; }
+.skill-md ul, .skill-md ol { padding-left: 1.2em; margin: 0.4em 0; }
+.skill-md li { margin: 0.15em 0; }
+.skill-md code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--c-surface);
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--c-text-2);
+}
+.skill-md pre {
+  background: var(--c-surface);
+  border-radius: 6px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+.skill-md pre code {
+  background: none;
+  padding: 0;
+  font-size: 11px;
+}
+.skill-md hr {
+  border: none;
+  border-top: 1px solid var(--c-border);
+  margin: 0.75em 0;
+}
+.skill-md blockquote {
+  border-left: 2px solid var(--c-border);
+  padding-left: 0.75em;
+  color: var(--c-text-3);
+  margin: 0.4em 0;
+}
+.skill-md strong { font-weight: 600; color: var(--c-text); }
+.skill-md em { font-style: italic; }
+.skill-md table {
+  display: table;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin: 0.5em 0;
+}
+.skill-md thead { display: table-header-group; }
+.skill-md tbody { display: table-row-group; }
+.skill-md tr { display: table-row; }
+.skill-md th, .skill-md td {
+  display: table-cell;
+  padding: 4px 8px;
+  border: 1px solid var(--c-border);
+  text-align: left;
+  vertical-align: top;
+}
+.skill-md th {
+  font-weight: 600;
+  color: var(--c-text);
+  background: var(--c-surface);
+}
+
+/* ── Find-on-page (FindInPage.tsx) ────────────────────────
+   Styled via the CSS Custom Highlight API rather than <mark> elements so
+   matches can be highlighted without touching React-rendered DOM nodes. */
+::highlight(contextbar-find-match) {
+  background-color: rgba(250, 204, 21, 0.35);
+}
+::highlight(contextbar-find-current) {
+  background-color: rgba(250, 204, 21, 0.85);
+  color: #1a1a1a;
+}

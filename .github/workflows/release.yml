@@ -1,0 +1,204 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.8.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag name
+        id: ref
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          TAG="${INPUT_TAG:-${{ github.ref_name }}}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Extract release notes from tag annotation
+        id: tag
+        run: |
+          git fetch --tags --force
+          NOTES=$(git tag -l --format='%(contents)' "${{ steps.ref.outputs.tag }}")
+          DELIM="NOTES_DELIM_${RANDOM}"
+          if [ -z "$NOTES" ]; then
+            echo "notes=No release notes provided." >> $GITHUB_OUTPUT
+          else
+            {
+              echo "notes<<${DELIM}"
+              echo "$NOTES"
+              echo "${DELIM}"
+            } >> $GITHUB_OUTPUT
+          fi
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build universal app
+        run: npm run tauri build -- --target universal-apple-darwin
+        env:
+          VITE_PUBLIC_POSTHOG_PROJECT_TOKEN: ${{ secrets.VITE_PUBLIC_POSTHOG_PROJECT_TOKEN }}
+          VITE_PUBLIC_POSTHOG_HOST: ${{ secrets.VITE_PUBLIC_POSTHOG_HOST }}
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Ad-hoc sign
+        run: |
+          APP=$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
+          echo "Signing: $APP"
+          codesign --deep --force --sign - "$APP"
+
+      - name: Collect updater artifacts
+        run: |
+          BUNDLE=src-tauri/target/universal-apple-darwin/release/bundle/macos
+          TARGZ=$(find "$BUNDLE" -name "*.app.tar.gz" -maxdepth 1 | head -1)
+          SIG=$(find "$BUNDLE" -name "*.app.tar.gz.sig" -maxdepth 1 | head -1)
+          if [ -z "$TARGZ" ] || [ -z "$SIG" ]; then
+            echo "::error::No signed updater artifacts found. Set TAURI_SIGNING_PRIVATE_KEY in repo secrets."
+            exit 1
+          else
+            TARGZ_NAME=$(basename "$TARGZ" | tr ' ' '.')
+            cp "$TARGZ" "$TARGZ_NAME"
+            cp "$SIG" "${TARGZ_NAME}.sig"
+            echo "TARGZ_NAME=$TARGZ_NAME" >> $GITHUB_ENV
+            echo "HAS_UPDATER=true" >> $GITHUB_ENV
+          fi
+
+      - name: Generate latest.json
+        run: |
+          VERSION="${{ steps.ref.outputs.tag }}"
+          VERSION_NUM="${VERSION#v}"
+          TARGZ_NAME="${{ env.TARGZ_NAME }}"
+          DOWNLOAD_URL="https://github.com/varkart/contextbar/releases/download/${VERSION}/${TARGZ_NAME}"
+          python3 - "$VERSION_NUM" "$DOWNLOAD_URL" "${TARGZ_NAME}.sig" <<'PYEOF'
+          import sys, json
+          from datetime import datetime, timezone
+          version, url, sig_path = sys.argv[1], sys.argv[2], sys.argv[3]
+          signature = open(sig_path).read()
+          manifest = {
+            "version": version,
+            "notes": f"See https://github.com/varkart/contextbar/releases/tag/v{version}",
+            "pub_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "platforms": {
+              "darwin-aarch64": {"signature": signature, "url": url},
+              "darwin-x86_64":  {"signature": signature, "url": url},
+            }
+          }
+          with open("latest.json", "w") as f:
+            json.dump(manifest, f, indent=2)
+          print(json.dumps(manifest, indent=2))
+          PYEOF
+
+      - name: Package DMG
+        run: |
+          VERSION="${{ steps.ref.outputs.tag }}"
+          APP=$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
+          APP_NAME=$(basename "$APP" .app)
+          DMG="${APP_NAME}_${VERSION}_universal.dmg"
+          STAGING="/tmp/contextbar_dmg"
+          mkdir -p "$STAGING"
+          cp -r "$APP" "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+
+          # Install note shown alongside the app in the DMG
+          cat > "$STAGING/INSTALL.txt" << 'INSTALLEOF'
+          Drag Mercury Ai Analysis to Applications, then launch it.
+
+          If macOS blocks the app on first launch, run this once in Terminal:
+
+              xattr -d com.apple.quarantine /Applications/Context\ Bar.app
+
+          Or: System Settings → Privacy & Security → Open Anyway
+          INSTALLEOF
+
+          hdiutil create \
+            -volname "${APP_NAME} ${VERSION}" \
+            -srcfolder "$STAGING" \
+            -ov -format UDZO \
+            -o "$DMG"
+          echo "DMG_NAME=$DMG" >> $GITHUB_ENV
+
+      - name: Compute DMG SHA256
+        run: |
+          SHA256=$(shasum -a 256 "${{ env.DMG_NAME }}" | awk '{print $1}')
+          echo "DMG_SHA256=$SHA256" >> $GITHUB_ENV
+
+      - name: Build release file list
+        run: |
+          {
+            echo "RELEASE_FILES<<RFEOF"
+            echo "${{ env.DMG_NAME }}"
+            echo "${{ env.TARGZ_NAME }}"
+            echo "${{ env.TARGZ_NAME }}.sig"
+            echo "latest.json"
+            echo "RFEOF"
+          } >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.ref.outputs.tag }}
+          name: "Mercury Ai Analysis ${{ steps.ref.outputs.tag }}"
+          body: |
+            ${{ steps.tag.outputs.notes }}
+
+            ---
+            **Install (DMG):** Download the `.dmg` below.
+            **Install (Homebrew):** `brew tap varkart/tap && brew install --cask contextbar`
+            **Auto-update:** Existing installs update automatically via the Settings panel.
+            **macOS security prompt:** run `xattr -d com.apple.quarantine /Applications/Context\ Bar.app`
+          files: ${{ env.RELEASE_FILES }}
+          draft: false
+          prerelease: false
+
+      - name: Update Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ steps.ref.outputs.tag }}"
+          VERSION_NUM="${VERSION#v}"
+          SHA256="${{ env.DMG_SHA256 }}"
+
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/varkart/homebrew-tap.git" /tmp/homebrew-tap
+          cd /tmp/homebrew-tap
+
+          sed -i '' "s/version \".*\"/version \"${VERSION_NUM}\"/" Casks/contextbar.rb
+          sed -i '' "s/sha256 \".*\"/sha256 \"${SHA256}\"/" Casks/contextbar.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/contextbar.rb
+          git commit -m "chore: bump contextbar to ${VERSION}"
+          git push

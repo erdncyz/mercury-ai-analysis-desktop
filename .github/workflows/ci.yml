@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pii-scan:
+    name: PII scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Scan for personal email domains in source files
+        run: |
+          # Blocks common personal email providers — no specific addresses listed.
+          PATTERN="[a-zA-Z0-9._%+\-]+@(gmail|outlook|hotmail|live|icloud|me|mac|yahoo|protonmail|pm)\.(com|net|org)"
+          MATCHES=$(grep -rIiE "$PATTERN" \
+            --include="*.ts" --include="*.tsx" --include="*.rs" \
+            --include="*.toml" --include="*.json" --include="*.yml" \
+            --include="*.yaml" --include="*.md" --include="*.rb" \
+            . 2>/dev/null | grep -v "node_modules" || true)
+          if [[ -n "$MATCHES" ]]; then
+            echo "BLOCKED: personal email address found in source files"
+            echo "$MATCHES"
+            exit 1
+          fi
+          echo "PII scan passed."
+
+  frontend:
+    name: Frontend — typecheck, build, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck and build
+        run: npm run build
+
+      - name: Unit tests
+        run: npm test
+
+  rust:
+    name: Rust — fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Tauri system dependencies
+        run: |
+          # The runner's bundled Google Chrome apt source has been failing
+          # `apt-get update` with a hash-sum mismatch. We don't use it; drop
+          # only that source and keep the Ubuntu archive (ubuntu.sources).
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/google-chrome.sources
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Format check
+        run: cargo fmt --check
+        working-directory: src-tauri
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: src-tauri
+
+      - name: Tests
+        run: cargo test
+        working-directory: src-tauri

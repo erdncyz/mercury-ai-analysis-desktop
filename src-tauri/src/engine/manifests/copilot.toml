@@ -1,0 +1,43 @@
+schema_version = 1
+id = "copilot"
+name = "GitHub Copilot"
+skills_agent_name = "github-copilot"
+
+[[detection]]
+type = "vscode_extension"
+extensions_dir = "~/.vscode/extensions"
+prefix = "github.copilot-chat-"
+
+# Copilot CLI agents are flat markdown files.
+[[skill_sources]]
+id = "copilot_agents"
+type = "directory"
+path = "~/.copilot/agents"
+flat_files = true
+
+# Custom agents shared through ~/.github/agents.
+[[skill_sources]]
+id = "github_agents"
+type = "directory"
+path = "~/.github/agents"
+flat_files = true
+
+# Prompt skills installed as directories that contain SKILL.md.
+[[skill_sources]]
+id = "github_prompts"
+type = "directory"
+path = "~/.github/prompts"
+
+# Skills shipped with the GitHub Copilot desktop app.
+[[skill_sources]]
+id = "app_skills"
+type = "directory"
+path = "~/Library/Application Support/com.github.githubapp/app-skills"
+
+# MCPs shared with VSCode in mcp.servers
+[[mcp_sources]]
+id = "vscode_settings"
+type = "json_nested"
+file = "~/Library/Application Support/Code/User/settings.json"
+key_path = ["mcp", "servers"]
+jsonc = true

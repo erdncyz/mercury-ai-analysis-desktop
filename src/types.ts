@@ -1,0 +1,525 @@
+export interface Agent {
+  id: string;
+  name: string;
+  version?: string;
+  installed: boolean;
+  installPath?: string;
+  skills: Skill[];
+  mcps: McpServer[];
+  error?: string;
+  supportsSkills: boolean;
+  supportsMcps: boolean;
+  /** Absolute paths of config files this agent reads/writes — used by restore UI. */
+  configFiles?: string[];
+  /** Parse errors from reading config files. Non-empty → read-only mode: toggles disabled, banner shown. */
+  configErrors?: string[];
+}
+
+export interface Skill {
+  name: string;
+  path: string;
+  description?: string;
+  /** True when a SKILL.md exists; full content fetched on demand via get_skill_full_description. */
+  hasFullDescription: boolean;
+  active: boolean;
+  /** Which [[skill_sources]] entry produced this skill. */
+  sourceId: string;
+  /** URL from the `source:` frontmatter field, if present. */
+  sourceUrl?: string;
+  /** FNV-1a hex hash of SKILL.md content — used to detect variants across tools. */
+  contentHash?: string;
+  /** Which tool this skill belongs to — populated by the aggregated skills view. */
+  agentId?: string;
+  /** Which tool name this skill belongs to — populated by the aggregated skills view. */
+  agentName?: string;
+}
+
+export interface CachedSkill {
+  name: string;
+  content: string;
+  contentHash: string;
+  /** "url" | "local" | "template" | "copy" | "detected" */
+  installMethod: string;
+  /** The URL (installMethod "url") or local path (installMethod "local") it was installed from. */
+  installSource: string | null;
+  cachedAt: number;
+  updatedAt: number;
+}
+
+export interface McpServer {
+  name: string;
+  command: string;     // empty string for HTTP-only MCPs
+  args: string[];
+  url?: string;        // set for HTTP MCPs
+  description?: string;
+  active: boolean;
+  hasSecrets: boolean;
+  secretKeyNames: string[];
+  extensionName?: string; // set for extension-dir MCPs (e.g. Gemini extensions)
+  /** Which [[mcp_sources]] entry produced this server. Used to route toggle commands. */
+  sourceId: string;
+  /** Tools disabled per-server via "disabledTools" key (agy/Gemini mcp_config.json). */
+  disabledTools?: string[];
+}
+
+export interface CachedMcp {
+  name: string;
+  command: string | null;
+  args: string[];
+  url: string | null;
+  /** Validated GitHub/homepage URL, or npmjs.com fallback. Null until background enrichment completes. */
+  sourceUrl: string | null;
+  cachedAt: number;
+  updatedAt: number;
+}
+
+export interface ToolPermissions {
+  allow: string[];
+  deny: string[];
+  /** Prompt-on-match rules (Claude Code "ask"). Empty when unsupported. */
+  ask: string[];
+}
+
+export type PermissionSection = 'allow' | 'deny' | 'ask';
+
+export interface Notification {
+  id: number;
+  tsMs: number;
+  level: 'info' | 'warn' | 'error';
+  title: string;
+  body: string;
+}
+
+export interface NpmInstallState {
+  package: string | null
+  installedVersion: string | null
+  isNpx: boolean
+}
+
+export interface McpTool {
+  name: string
+  description?: string
+  inputSchema?: unknown
+}
+
+export interface FileEntry {
+  name: string
+  path: string
+  isDir: boolean
+  children: FileEntry[]
+  extension?: string
+}
+
+// ── Session History ──────────────────────────────────────────────────────────
+
+export interface SessionEntry {
+  /** Which agent recorded this session: "claude" | "codex" | "gemini" | "agy" | "kiro" | "opencode". */
+  agent: string
+  sessionId: string
+  display: string
+  timestamp: number
+  project: string
+  projectName: string
+  totalTokens: number
+  model?: string
+  durationMinutes?: number
+  isLive: boolean
+  errorCount: number
+  /** Number of prompts submitted in this session. */
+  promptCount: number
+  /** Agent's own session title (user rename or AI-generated), when known. */
+  title?: string | null
+}
+
+/** A feature/context toggle declared in an agent manifest (get_capabilities). */
+export interface CapabilityState {
+  id: string
+  label: string
+  description?: string | null
+  /** Longer helper text (from the agent's own docs) for hover tooltips. */
+  help?: string | null
+  /** "What to expect" markdown for the detail view. */
+  example?: string | null
+  /** "context" | "tools" | "features" | "limits" */
+  category: string
+  /** Estimated startup tokens saved when disabled. */
+  tokensHint?: number | null
+  /** "toggle" | "enum" */
+  kind: string
+  /** Options for enum kinds. */
+  values: string[]
+  defaultValue?: string | null
+  /** Enum kinds: whether a "(not set)" option (empty string) is offered. */
+  allowUnset: boolean
+  /** Current value for enum kinds (null for toggles). */
+  value?: string | null
+  enabled: boolean
+  /** Writer summary — powers the auto-generated before/after snippet. */
+  writerFile: string
+  writerKind: 'json_flag' | 'json_list_member' | 'toml_key'
+  writerKey?: string | null
+  writerOffValue?: unknown
+  writerPath?: string | null
+  writerMembers: string[]
+}
+
+/** Codex permission profiles (get_codex_profiles) — read-only viewer data. */
+export interface CodexProfiles {
+  mixedConfig: boolean
+  defaultProfile?: string | null
+  profiles: CodexProfile[]
+}
+export interface CodexProfile {
+  name: string
+  description?: string | null
+  extends?: string | null
+  workspaceRoots: string[]
+  filesystem: { path: string; access: string }[]
+  networkEnabled: boolean
+  domains: { pattern: string; action: string }[]
+}
+
+/** User-authored session metadata (get_session_meta). */
+export interface SessionMeta {
+  sessionId: string
+  pinned: boolean
+  tags: string[]
+  customName?: string | null
+}
+
+/** Repo-scoped agent config (get_repo_agent_config). */
+export interface RepoAgentConfig {
+  claude: {
+    project: RepoScopedPermissions
+    local: RepoScopedPermissions
+  }
+  codex: { trustLevel?: string | null }
+}
+export interface RepoScopedPermissions {
+  file: string
+  exists: boolean
+  allow: string[]
+  deny: string[]
+  ask: string[]
+}
+export type RepoScope = 'project' | 'local'
+
+/** Repo-scope capability override (get_repo_capabilities). */
+export interface RepoCapabilityState {
+  id: string
+  label: string
+  description?: string | null
+  /** Full helper text for the "?" expander. */
+  help?: string | null
+  category: string
+  /** "tristate" (inherit/on/off) | "enum" (inherit + values) | "deny" (inherit/deny). */
+  control: string
+  values: string[]
+  state: string
+}
+
+/** User-authored repo/worktree metadata (get_repo_meta). Rows are keyed by
+ *  repo path or worktree path — same store serves both. */
+export interface RepoMeta {
+  repoPath: string
+  customName?: string | null
+  notes?: string | null
+}
+
+/** Rolling per-agent usage meters (get_usage_windows). */
+export interface AgentUsage {
+  agent: string
+  tokens5h: number
+  cost5h: number
+  sessions5h: number
+  tokens7d: number
+  cost7d: number
+  sessions7d: number
+}
+
+/** One full-text hit from the transcript index (search_transcripts). */
+export interface TranscriptMatch {
+  sessionId: string
+  agent: string
+  /** Extract around the match; hits wrapped in … markers. */
+  snippet: string
+  display: string
+  project: string
+  projectName: string
+  timestamp: number
+  totalTokens: number
+}
+
+export interface ContentBlock {
+  blockType: string
+  text?: string
+  toolName?: string
+  toolInput?: string
+  toolResult?: string
+  isError: boolean
+  /** `tool_use` blocks carry their own id; `tool_result` blocks carry the id
+   *  of the call they answer. Paired in the transcript to show a tool's
+   *  output next to its invocation. */
+  toolUseId?: string
+}
+
+export interface HistoryMessage {
+  role: string
+  content: ContentBlock[]
+  timestamp?: number
+  model?: string
+  usage?: TokenUsage
+}
+
+export interface TokenUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+}
+
+export interface SessionDetail {
+  agent: string
+  sessionId: string
+  messages: HistoryMessage[]
+  totalTokens: TokenUsage
+  model?: string
+  durationMs?: number
+  project: string
+  projectName: string
+  timestamp: number
+}
+
+export interface HistoryStats {
+  totalSessions: number
+  totalTokens: number
+  liveSessionId?: string
+}
+
+// ── Insights ──────────────────────────────────────────────────────────────────
+
+export interface ToolCount {
+  name: string
+  count: number
+}
+
+export interface ModelStat {
+  model: string
+  sessions: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  estCostUsd?: number | null
+}
+
+/** Real full per-agent total for the window. */
+export interface AgentTokens {
+  agent: string
+  tokens: number
+  inputTokens: number
+  outputTokens: number
+  sessions: number
+  estCostUsd?: number | null
+}
+
+export interface ProjectTokens {
+  project: string
+  projectName: string
+  tokens: number
+  inputTokens: number
+  outputTokens: number
+  prompts: number
+  sessions: number
+  estCostUsd?: number | null
+}
+
+export interface SessionCost {
+  sessionId: string
+  display: string
+  project: string
+  projectName: string
+  agent: string
+  model: string
+  ts: number
+  tokens: number
+  inputTokens: number
+  outputTokens: number
+  prompts: number
+  estCostUsd?: number | null
+}
+
+export type DriverSide = 'input' | 'output'
+export type DriverKind =
+  | 'tool' | 'mcp' | 'skill' | 'prompt' | 'initial' | 'compaction' | 'growth' | 'reread'
+  | 'edit' | 'write' | 'shell' | 'search' | 'answer' | 'reasoning'
+
+export interface Driver {
+  side: DriverSide
+  kind: DriverKind
+  name: string
+  calls: number
+  tokens: number
+  /** Input drivers: fresh context this source added (before the re-read share). */
+  createdTokens?: number | null
+  /** Input drivers: this source's share of cumulative cache re-read. */
+  rereadTokens?: number | null
+  approxCostUsd?: number | null
+  /** Share of its own side's tokens, 0..100. */
+  pct: number
+  hint?: string | null
+}
+
+export interface SessionDrivers {
+  sessionId: string
+  model: string
+  inputTokens: number
+  outputTokens: number
+  totalCostUsd?: number | null
+  coarse: boolean
+  drivers: Driver[]
+}
+
+export interface AgentContextEfficiency {
+  agent: string
+  sessions: number
+  inputTokens: number
+  outputTokens: number
+  coarse: boolean
+  /** 0..100. 100 minus the share of input tokens spent on compaction/growth. */
+  score: number
+  /** Aggregated drivers with a hint, sorted by tokens desc, capped at 5. */
+  topDrivers: Driver[]
+}
+
+export interface ContextEfficiency {
+  sessionsAnalyzed: number
+  excludedAgents: string[]
+  overall: AgentContextEfficiency
+  perAgent: AgentContextEfficiency[]
+}
+
+export interface HeaviestSession {
+  sessionId: string
+  display: string
+  tokens: number
+}
+
+export interface TokenPoint {
+  tsMs: number
+  tokens: number
+}
+
+export interface AgentActivityPoint {
+  tsMs: number
+  agent: string
+  /** Estimated active duration (last prompt - first prompt, capped at 4h). 0 when unknown. */
+  minutes: number
+}
+
+export interface CommitEntry {
+  repoName: string
+  /** Unix seconds. */
+  ts: number
+}
+
+export interface SessionInsights {
+  sessionsAnalyzed: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  estCostUsd: number
+  cacheReadRatio: number
+  avgToolCalls: number
+  perModel: ModelStat[]
+  perProject: ProjectTokens[]
+  /** Full per-agent totals for the window. */
+  perAgent: AgentTokens[]
+  /** Every session in the window, ranked by tokens descending. */
+  perSession: SessionCost[]
+  toolCounts: ToolCount[]
+  mcpToolCounts: ToolCount[]
+  skillCounts: ToolCount[]
+  /** Every skill name invoked ≥1× in the window (untruncated). */
+  skillNamesUsed: string[]
+  /** Every MCP server name called ≥1× in the window (untruncated). */
+  mcpNamesUsed: string[]
+  heaviest?: HeaviestSession | null
+}
+
+// ── Worktrees ─────────────────────────────────────────────────────────────────
+
+export interface WorktreeInfo {
+  path: string
+  branch?: string
+  isPrimary: boolean
+  isDetached: boolean
+  isDirty: boolean
+  ahead: number
+  behind: number
+  isMerged: boolean
+  /** Unix seconds of the last commit in this worktree. */
+  lastCommitTs?: number
+  lastCommitSubject?: string
+  /** A remote-tracking ref shares this branch's name — i.e. it's been pushed. */
+  hasRemote: boolean
+}
+
+export interface BranchInfo {
+  name: string
+  /** Fully merged into the base branch — safe to delete. */
+  isMerged: boolean
+  ahead: number
+  lastCommitTs?: number
+  lastCommitSubject?: string
+  hasRemote: boolean
+}
+
+/** A remote branch with no matching local branch — never pulled down here. */
+export interface RemoteBranchInfo {
+  name: string
+  remote: string
+  lastCommitTs?: number
+  lastCommitSubject?: string
+}
+
+export interface PullRequestInfo {
+  number: number
+  title: string
+  url: string
+  author: string
+  isDraft: boolean
+}
+
+export interface CustomGitHost {
+  domain: string
+  kind: 'github' | 'gitlab'
+}
+
+export interface GitCliInfo {
+  installed: boolean
+  version?: string
+  authenticated: boolean
+  account?: string
+}
+
+export interface GitCliStatus {
+  gh: GitCliInfo
+  glab: GitCliInfo
+}
+
+export interface RepoWorktrees {
+  repoName: string
+  repoPath: string
+  baseBranch: string
+  worktrees: WorktreeInfo[]
+  /** Local branches with no worktree checked out — not present in `worktrees`. */
+  bareBranches: BranchInfo[]
+  /** Remote branches with no local branch at all — never pulled down here. */
+  remoteBranches: RemoteBranchInfo[]
+  /** Agent instruction/config files present at the repo root (CLAUDE.md, AGENTS.md, …). */
+  agentFiles: string[]
+  /** Skill names under <root>/.claude/skills/. */
+  repoSkills: string[]
+}

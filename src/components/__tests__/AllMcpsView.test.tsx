@@ -1,0 +1,229 @@
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import AllMcpsView from '../views/AllMcpsView'
+import type { Agent, McpServer } from '../../types'
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
+vi.mock('../../analytics', () => ({ capture: vi.fn(), captureException: vi.fn() }))
+
+import { invoke } from '@tauri-apps/api/core'
+const mockInvoke = vi.mocked(invoke)
+
+beforeEach(() => {
+  mockInvoke.mockReset()
+  mockInvoke.mockResolvedValue(undefined)
+})
+
+function makeMcp(overrides: Partial<McpServer> & Pick<McpServer, 'name'>): McpServer {
+  return {
+    command: 'npx',
+    args: [],
+    active: true,
+    hasSecrets: false,
+    secretKeyNames: [],
+    sourceId: 'settings_json',
+    ...overrides,
+  }
+}
+
+function makeTool(id: string, name: string, mcps: McpServer[], installed = true): Agent {
+  return {
+    id,
+    name,
+    installed,
+    supportsSkills: true,
+    supportsMcps: true,
+    skills: [],
+    mcps,
+  }
+}
+
+const claudeMcps = [
+  makeMcp({ name: 'github', command: 'npx -y @modelcontextprotocol/server-github' }),
+  makeMcp({ name: 'netlify', command: 'npx -y @netlify/mcp' }),
+  makeMcp({ name: 'sentry', command: 'npx -y @sentry/mcp-server' }),
+]
+
+const cursorMcps = [
+  makeMcp({ name: 'github', command: 'npx -y @modelcontextprotocol/server-github' }),
+  makeMcp({ name: 'cursor-db', command: 'npx -y cursor-db-mcp' }),
+]
+
+const singleTool = makeTool('claude', 'Claude Code', claudeMcps)
+const claudeTool = makeTool('claude', 'Claude Code', claudeMcps)
+const cursorTool = makeTool('cursor', 'Cursor', cursorMcps)
+
+describe('AllMcpsView — renders MCPs', () => {
+  it('renders all unique MCP names from installed tools', () => {
+    render(<AllMcpsView agents={[singleTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} />)
+    expect(screen.getByText('github')).toBeInTheDocument()
+    expect(screen.getByText('netlify')).toBeInTheDocument()
+    expect(screen.getByText('sentry')).toBeInTheDocument()
+  })
+
+  it('does not render MCPs from uninstalled tools', () => {
+    const notInstalled = makeTool('gemini', 'Gemini', [makeMcp({ name: 'gemini-mcp' })], false)
+    render(<AllMcpsView agents={[singleTool, notInstalled]} onBack={vi.fn()} onSelectMcp={vi.fn()} />)
+    expect(screen.queryByText('gemini-mcp')).not.toBeInTheDocument()
+  })
+
+  it('deduplicates MCPs with the same name across tools', () => {
+    // github exists in both claude and cursor, should appear only once as a row
+    render(<AllMcpsView agents={[claudeTool, cursorTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} />)
+    const githubs = screen.getAllByText('github')
+    expect(githubs).toHaveLength(1)
+  })
+})
+
+describe('AllMcpsView — search', () => {
+  it('search filters MCPs by name', () => {
+    render(<AllMcpsView agents={[singleTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('Search MCPs…'), { target: { value: 'net' } })
+    expect(screen.getByText('netlify')).toBeInTheDocument()
+    expect(screen.queryByText('github')).not.toBeInTheDocument()
+    expect(screen.queryByText('sentry')).not.toBeInTheDocument()
+  })
+
+  it('shows empty state when search matches nothing', () => {
+    render(<AllMcpsView agents={[singleTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('Search MCPs…'), { target: { value: 'zzznomatch' } })
+    expect(screen.getByText('No MCPs match')).toBeInTheDocument()
+  })
+
+  it('count label shows "N of M MCPs" when filtered', () => {
+    render(<AllMcpsView agents={[singleTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText('Search MCPs…'), { target: { value: 'net' } })
+    expect(screen.getByText(/1 of 3 MCPs/)).toBeInTheDocument()
+  })
+
+  it('count label shows full count with providers when not filtered', () => {
+    render(<AllMcpsView agents={[singleTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} />)
+    expect(screen.getByText(/3 MCPs · 1 providers/)).toBeInTheDocument()
+  })
+})
+
+describe('AllMcpsView — provider chips', () => {
+  it('does not render provider chips when only one installed tool', () => {
+    render(<AllMcpsView agents={[singleTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} />)
+    // AgentChips renders nothing when installedAgents.length <= 1
+    expect(screen.queryByText('Claude Code')).not.toBeInTheDocument()
+  })
+
+  it('renders provider chips when multiple installed tools', () => {
+    render(<AllMcpsView agents={[claudeTool, cursorTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} />)
+    const filterBar = within(screen.getByTestId('agent-filter-chips'))
+    expect(filterBar.getByText('Claude Code')).toBeInTheDocument()
+    expect(filterBar.getByText('Cursor')).toBeInTheDocument()
+  })
+})
+
+describe('AllMcpsView — sorting', () => {
+  const mixedTool = makeTool('claude', 'Claude Code', [
+    makeMcp({ name: 'alpha-disabled', active: false }),
+    makeMcp({ name: 'zeta-enabled', active: true }),
+  ])
+
+  it('defaults to alphabetical order', () => {
+    const { container } = render(<AllMcpsView agents={[mixedTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} />)
+    const text = container.textContent ?? ''
+    expect(text.indexOf('alpha-disabled')).toBeLessThan(text.indexOf('zeta-enabled'))
+  })
+
+  it('clicking the sort control switches to enabled-first order', () => {
+    const { container } = render(<AllMcpsView agents={[mixedTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} />)
+    fireEvent.click(screen.getByTitle(/click to sort by enabled status/i))
+    expect(screen.getByText('Enabled first')).toBeInTheDocument()
+    const text = container.textContent ?? ''
+    expect(text.indexOf('zeta-enabled')).toBeLessThan(text.indexOf('alpha-disabled'))
+  })
+})
+
+describe('AllMcpsView — interaction', () => {
+  it('clicking an MCP calls onSelectMcp with the primary MCP', () => {
+    const onSelectMcp = vi.fn()
+    render(<AllMcpsView agents={[singleTool]} onBack={vi.fn()} onSelectMcp={onSelectMcp} />)
+    fireEvent.click(screen.getByText('github'))
+    expect(onSelectMcp).toHaveBeenCalledTimes(1)
+    expect(onSelectMcp).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'github' })
+    )
+  })
+
+  it('clicking a provider chip solos that provider, hiding the others\' exclusive MCPs', () => {
+    // netlify only exists in Claude; soloing Cursor should hide it
+    render(<AllMcpsView agents={[claudeTool, cursorTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} />)
+    expect(screen.getByText('cursor-db')).toBeInTheDocument()
+    expect(screen.getByText('netlify')).toBeInTheDocument()
+    fireEvent.click(within(screen.getByTestId('agent-filter-chips')).getByText('Cursor').closest('button')!)
+    // Claude-exclusive MCP hidden, Cursor-exclusive MCP remains
+    expect(screen.queryByText('netlify')).not.toBeInTheDocument()
+    expect(screen.getByText('cursor-db')).toBeInTheDocument()
+  })
+})
+
+describe('AllMcpsView — agent selector switches to a dropdown at 3+ agents', () => {
+  it('renders the dropdown (not chips) with 3 installed agents', () => {
+    const geminiTool = makeTool('gemini', 'Gemini', [makeMcp({ name: 'gemini-only' })])
+    render(<AllMcpsView agents={[claudeTool, cursorTool, geminiTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} />)
+    expect(screen.getByTestId('agent-filter-dropdown')).toBeInTheDocument()
+    expect(screen.queryByTestId('agent-filter-chips')).not.toBeInTheDocument()
+  })
+})
+
+describe('AllMcpsView — status filter (All / Active / Inactive)', () => {
+  const mixedStatusTool = makeTool('claude', 'Claude Code', [
+    makeMcp({ name: 'on-mcp', active: true }),
+    makeMcp({ name: 'off-mcp', active: false }),
+  ])
+
+  it('"Active" narrows to MCPs with at least one enabled variant', () => {
+    render(<AllMcpsView agents={[mixedStatusTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} />)
+    fireEvent.click(within(screen.getByTestId('status-filter')).getByText('Active'))
+    expect(screen.getByText('on-mcp')).toBeInTheDocument()
+    expect(screen.queryByText('off-mcp')).not.toBeInTheDocument()
+  })
+
+  it('"Inactive" narrows to MCPs with no enabled variant', () => {
+    render(<AllMcpsView agents={[mixedStatusTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} />)
+    fireEvent.click(within(screen.getByTestId('status-filter')).getByText('Inactive'))
+    expect(screen.getByText('off-mcp')).toBeInTheDocument()
+    expect(screen.queryByText('on-mcp')).not.toBeInTheDocument()
+  })
+})
+
+describe('AllMcpsView — remove everywhere from the list row', () => {
+  it('shows a warning naming every agent the MCP is on, before removing anything', () => {
+    render(<AllMcpsView agents={[claudeTool, cursorTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} />)
+    fireEvent.click(screen.getByLabelText('Remove github from all agents'))
+    const banner = screen.getByText(/Remove completely\?/).closest('p')!
+    expect(banner.textContent).toContain('Claude Code')
+    expect(banner.textContent).toContain('Cursor')
+    expect(mockInvoke).not.toHaveBeenCalled()
+  })
+
+  it('confirming removes the MCP from every agent that has it and refreshes', async () => {
+    const onInstalled = vi.fn().mockResolvedValue(undefined)
+    render(<AllMcpsView agents={[claudeTool, cursorTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} onInstalled={onInstalled} />)
+    // "github" exists on both Claude and Cursor
+    fireEvent.click(screen.getByLabelText('Remove github from all agents'))
+    fireEvent.click(screen.getByText('Remove completely'))
+
+    await waitFor(() => expect(onInstalled).toHaveBeenCalled())
+    const removeCalls = mockInvoke.mock.calls.filter(([cmd]) => cmd === 'remove_mcp')
+    expect(removeCalls).toHaveLength(2)
+    expect(removeCalls.map(([, args]) => (args as { agentId: string }).agentId).sort()).toEqual(['claude', 'cursor'])
+  })
+
+  it('an MCP installed on only one agent only removes from that one', async () => {
+    const onInstalled = vi.fn().mockResolvedValue(undefined)
+    render(<AllMcpsView agents={[claudeTool, cursorTool]} onBack={vi.fn()} onSelectMcp={vi.fn()} onInstalled={onInstalled} />)
+    // "sentry" only exists on Claude
+    fireEvent.click(screen.getByLabelText('Remove sentry from all agents'))
+    fireEvent.click(screen.getByText('Remove completely'))
+
+    await waitFor(() => expect(onInstalled).toHaveBeenCalled())
+    const removeCalls = mockInvoke.mock.calls.filter(([cmd]) => cmd === 'remove_mcp')
+    expect(removeCalls).toHaveLength(1)
+    expect((removeCalls[0][1] as { agentId: string }).agentId).toBe('claude')
+  })
+})

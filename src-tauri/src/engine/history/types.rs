@@ -1,0 +1,101 @@
+use serde::{Deserialize, Serialize};
+
+pub(crate) fn default_agent() -> String {
+    "claude".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionEntry {
+    /// Which agent recorded this session ("claude" | "codex" | "gemini").
+    #[serde(default = "default_agent")]
+    pub agent: String,
+    pub session_id: String,
+    pub display: String,
+    pub timestamp: u64,
+    pub project: String,
+    pub project_name: String,
+    pub total_tokens: u64,
+    pub model: Option<String>,
+    pub duration_minutes: Option<u64>,
+    pub is_live: bool,
+    pub error_count: u32,
+    /// Number of prompts submitted in this session (lines in history.jsonl).
+    pub prompt_count: u32,
+    /// Session title as shown by the agent's own resume picker: the user's
+    /// rename (custom-title) or the AI-generated title (ai-title), if any.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDetail {
+    #[serde(default = "default_agent")]
+    pub agent: String,
+    pub session_id: String,
+    pub messages: Vec<Message>,
+    pub total_tokens: TokenUsage,
+    pub model: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub project: String,
+    pub project_name: String,
+    pub timestamp: u64,
+    /// See SessionEntry::title.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Message {
+    pub role: String,
+    pub content: Vec<ContentBlock>,
+    pub timestamp: Option<u64>,
+    pub model: Option<String>,
+    pub usage: Option<TokenUsage>,
+    /// Characters of extended-thinking / reasoning this turn emitted. Kept
+    /// separate from `content` (which drops thinking blocks) so attribution
+    /// can size the "reasoning" slice of output without changing transcripts.
+    #[serde(default)]
+    pub reasoning_chars: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentBlock {
+    pub block_type: String,
+    pub text: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_input: Option<String>,
+    pub tool_result: Option<String>,
+    pub is_error: bool,
+    /// `tool_use` blocks carry their own id; `tool_result` blocks carry the
+    /// id of the call they answer. The frontend pairs the two to show a
+    /// tool's output next to its invocation.
+    #[serde(default)]
+    pub tool_use_id: Option<String>,
+    /// Untruncated character count of this block's payload (text, tool args,
+    /// or tool result), recorded before any preview truncation. Token
+    /// attribution uses it to split a turn's spend across its blocks; the
+    /// visible `text` / `tool_input` / `tool_result` fields may be shorter.
+    #[serde(default)]
+    pub content_chars: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryStats {
+    pub total_sessions: usize,
+    pub total_tokens: u64,
+    pub live_session_id: Option<String>,
+}
