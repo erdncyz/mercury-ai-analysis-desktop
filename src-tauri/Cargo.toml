@@ -1,6 +1,6 @@
 [package]
 name = "contextbar"
-version = "1.0.0"
+version = "1.0.1"
 description = "macOS menu bar app — unified view of AI tool skills and MCP servers"
 authors = ["varkart"]
 edition = "2021"

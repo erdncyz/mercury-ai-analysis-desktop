@@ -2696,34 +2696,112 @@ fn quit_app(app: tauri::AppHandle) {
 // IPC commands – updater
 // ---------------------------------------------------------------------------
 
+const RELEASE_REPO: &str = "erdncyz/mercury-ai-analysis-desktop";
+
+fn version_is_newer(latest: &str, current: &str) -> bool {
+    let parse = |v: &str| {
+        v.trim_start_matches('v')
+            .split('.')
+            .map(|part| part.parse::<u64>().unwrap_or(0))
+            .collect::<Vec<_>>()
+    };
+    let latest = parse(latest);
+    let current = parse(current);
+    latest > current
+}
+
+async fn latest_release() -> Result<(String, String), String> {
+    let client = reqwest::Client::builder()
+        .user_agent("MercuryAiAnalysis")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let data: serde_json::Value = client
+        .get(format!("https://api.github.com/repos/{RELEASE_REPO}/releases/latest"))
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    let tag = data["tag_name"].as_str().unwrap_or("").trim_start_matches('v').to_string();
+    let download = data["assets"]
+        .as_array()
+        .and_then(|assets| {
+            assets.iter().find(|asset| {
+                asset["name"].as_str().unwrap_or("").ends_with(".dmg")
+            })
+        })
+        .and_then(|asset| asset["browser_download_url"].as_str())
+        .ok_or_else(|| "The latest release has no DMG.".to_string())?
+        .to_string();
+    if tag.is_empty() {
+        return Err("The latest release has no version.".to_string());
+    }
+    Ok((tag, download))
+}
+
 #[tauri::command]
-async fn check_for_update(app: tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {
-    use tauri_plugin_updater::UpdaterExt;
-    match app.updater().map_err(|e| e.to_string())?.check().await {
-        Ok(Some(update)) => Ok(Some(serde_json::json!({
-            "version": update.version,
-            "currentVersion": update.current_version,
-        }))),
-        Ok(None) => Ok(None),
-        Err(e) => Err(e.to_string()),
+async fn check_for_update() -> Result<Option<serde_json::Value>, String> {
+    let (latest, _) = latest_release().await?;
+    if version_is_newer(&latest, env!("CARGO_PKG_VERSION")) {
+        Ok(Some(serde_json::json!({
+            "version": latest,
+            "currentVersion": env!("CARGO_PKG_VERSION"),
+        })))
+    } else {
+        Ok(None)
     }
 }
 
 #[tauri::command]
 async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri_plugin_updater::UpdaterExt;
-    let update = app
-        .updater()
-        .map_err(|e| e.to_string())?
-        .check()
+    let (latest, download) = latest_release().await?;
+    if !version_is_newer(&latest, env!("CARGO_PKG_VERSION")) {
+        return Err("Already up to date".to_string());
+    }
+    let client = reqwest::Client::builder()
+        .user_agent("MercuryAiAnalysis")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let bytes = client
+        .get(download)
+        .send()
         .await
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "No update available".to_string())?;
-    update
-        .download_and_install(|_, _| {}, || {})
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .bytes()
         .await
         .map_err(|e| e.to_string())?;
-    app.restart();
+    let dmg_path = std::env::temp_dir().join(format!("Mercury-Ai-Analysis-{latest}.dmg"));
+    std::fs::write(&dmg_path, &bytes).map_err(|e| e.to_string())?;
+    let script_path = std::env::temp_dir().join(format!("mercury-ai-analysis-update-{latest}.sh"));
+    let script = format!(
+        r#"#!/bin/bash
+set -euo pipefail
+while kill -0 {pid} 2>/dev/null; do sleep 0.2; done
+mount=$(hdiutil attach "{dmg}" -nobrowse -readonly | awk '/\/Volumes\// {{ print $NF; exit }}')
+app=$(find "$mount" -maxdepth 2 -name '*.app' -print -quit)
+rm -rf "/Applications/Mercury Ai Analysis.app"
+ditto "$app" "/Applications/Mercury Ai Analysis.app"
+hdiutil detach "$mount"
+open "/Applications/Mercury Ai Analysis.app"
+rm -f "{dmg}" "{script}"
+"#,
+        pid = std::process::id(),
+        dmg = dmg_path.display(),
+        script = script_path.display(),
+    );
+    std::fs::write(&script_path, script).map_err(|e| e.to_string())?;
+    std::process::Command::new("/bin/bash")
+        .arg(&script_path)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    app.exit(0);
+    Ok(())
 }
 
 #[tauri::command]

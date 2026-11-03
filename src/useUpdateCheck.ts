@@ -57,7 +57,7 @@ export function useUpdateCheck(currentVersion: string) {
         if (result && isNewer(result.version, version)) {
           const info: UpdateInfo = {
             latestVersion: result.version,
-            releaseUrl: `https://github.com/varkart/contextbar/releases/tag/v${result.version}`,
+            releaseUrl: `https://github.com/erdncyz/mercury-ai-analysis-desktop/releases/tag/v${result.version}`,
             checkedAt: Date.now(),
           }
           saveCache(info)
@@ -68,7 +68,7 @@ export function useUpdateCheck(currentVersion: string) {
       })
       .catch(() => {
         // Fallback: GitHub API (works without signing)
-        return fetch('https://api.github.com/repos/varkart/contextbar/releases/latest', {
+        return fetch('https://api.github.com/repos/erdncyz/mercury-ai-analysis-desktop/releases/latest', {
           headers: { Accept: 'application/vnd.github+json' },
         })
           .then(r => r.json())

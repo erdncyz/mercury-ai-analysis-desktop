@@ -637,7 +637,7 @@ export default function Settings({ updateInfo, checkingUpdate, onCheckUpdateNow,
             )
           )}
           <SettingRow label="Source">
-            <a href="https://github.com/erdncyz/mercury-ai-analysis" target="_blank" rel="noopener noreferrer"
+            <a href="https://github.com/erdncyz/mercury-ai-analysis-desktop" target="_blank" rel="noopener noreferrer"
               className="text-[13px] text-indigo-500 hover:text-indigo-400 transition-colors flex items-center gap-1">
               Mercury Ai Analysis <ExternalLinkIcon />
             </a>
