@@ -72,6 +72,13 @@ pub fn sources() -> Vec<&'static dyn SessionSource> {
     ]
 }
 
+/// A deleted project folder should not keep showing up from leftover
+/// agent transcripts. Empty paths are kept, because some sources have none.
+fn project_dir_exists(project: &str) -> bool {
+    let project = project.trim().trim_end_matches('/');
+    project.is_empty() || std::path::Path::new(project).is_dir()
+}
+
 pub fn source_for(agent: &str) -> Option<&'static dyn SessionSource> {
     sources().into_iter().find(|s| s.agent_id() == agent)
 }
@@ -99,6 +106,9 @@ pub fn list_all(
                 if !e.display.to_lowercase().contains(q.as_str()) {
                     return false;
                 }
+            }
+            if !project_dir_exists(&e.project) {
+                return false;
             }
             true
         })

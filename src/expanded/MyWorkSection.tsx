@@ -974,6 +974,31 @@ export default function MyWorkSection({ sessions, repos, loading, goTo, onRefres
                               VS
                             </button>
                           )}
+                          {live && (
+                            <button
+                              onClick={() => {
+                                invoke('stop_project', { path: p.project })
+                                  .then(() => { showToast('success', 'Stopped'); onRefresh() })
+                                  .catch(() => showToast('error', 'Could not stop'))
+                              }}
+                              title="Stop the running agent"
+                              className="text-[10.5px] px-2 py-0.5 rounded-md border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 transition-colors"
+                            >
+                              Stop
+                            </button>
+                          )}
+                          <button
+                            onClick={() => {
+                              if (!window.confirm(`Remove ${p.name} from Mercury Ai Analysis? This deletes its saved Codex sessions.`)) return
+                              invoke('forget_project', { path: p.project })
+                                .then(() => { showToast('success', 'Removed'); onRefresh() })
+                                .catch(() => showToast('error', 'Could not remove'))
+                            }}
+                            title="Remove saved sessions for this project"
+                            className="text-[10.5px] px-2 py-0.5 rounded-md border border-red-500/40 text-red-300 hover:bg-red-500/10 transition-colors"
+                          >
+                            Delete
+                          </button>
                           <button
                             onClick={() => invoke('reveal_in_finder', { path: p.project }).catch(() => showToast('error', 'Could not reveal in Finder'))}
                             title="Reveal in Finder"

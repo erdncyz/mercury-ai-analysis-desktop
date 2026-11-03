@@ -15,7 +15,6 @@ mod watcher;
 
 use crate::models::Agent;
 use tauri::{
-    menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, WebviewUrl, WebviewWindowBuilder,
 };
@@ -301,6 +300,62 @@ fn read_entry(path: &std::path::Path, depth: usize) -> Result<crate::models::Fil
 fn open_path(path: String) -> Result<(), String> {
     let canonical = validate_tool_path(&path)?;
     tauri_plugin_opener::open_path(canonical, None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn forget_project(path: String) -> Result<usize, String> {
+    let removed = engine::sessions::codex::delete_sessions_for_cwd(&path);
+    Ok(removed)
+}
+
+#[tauri::command]
+fn stop_project(path: String) -> Result<usize, String> {
+    let wanted = path.trim().trim_end_matches('/').to_string();
+    if wanted.is_empty() {
+        return Err("Missing project path".to_string());
+    }
+    let output = std::process::Command::new("lsof")
+        .args(["-a", "-d", "cwd", "-Fn"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut pid: Option<u32> = None;
+    let mut stopped = 0;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix('p') {
+            pid = rest.parse().ok();
+        } else if let Some(cwd) = line.strip_prefix('n') {
+            let cwd = cwd.trim_end_matches('/');
+            let same = cwd == wanted || cwd.starts_with(&(wanted.clone() + "/"));
+            if same {
+                if let Some(pid) = pid {
+                    if agent_process(pid) && kill_process(pid) {
+                        stopped += 1;
+                    }
+                }
+            }
+        }
+    }
+    Ok(stopped)
+}
+
+fn agent_process(pid: u32) -> bool {
+    let output = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output();
+    let Ok(output) = output else { return false };
+    let command = String::from_utf8_lossy(&output.stdout).to_lowercase();
+    ["codex", "claude", "gemini", "cursor-agent"]
+        .iter()
+        .any(|name| command.contains(name))
+}
+
+fn kill_process(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .arg(pid.to_string())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -2849,32 +2904,21 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let quit = MenuItem::with_id(app, "quit", "Quit Mercury Ai Analysis", true, None::<&str>)?;
-            let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&settings, &quit])?;
-
             let tray = TrayIconBuilder::new()
                 .icon(tauri::include_image!("icons/tray_icon@2x.png"))
                 .icon_as_template(true)
-                .menu(&menu)
                 .tooltip("Mercury Ai Analysis\nUnified view of AI tool skills and MCP servers.")
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(|tray, event| {
                     tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
                     if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
+                        button: MouseButton::Left | MouseButton::Right,
                         button_state: MouseButtonState::Up,
                         ..
                     } = event
                     {
-                        let app = tray.app_handle();
-                        toggle_main_window(app);
+                        toggle_main_window(tray.app_handle());
                     }
-                })
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    "quit" => app.exit(0),
-                    "settings" => open_main_window(app, Some("settings")),
-                    _ => {}
                 })
                 .build(app)?;
 
@@ -2976,6 +3020,8 @@ pub fn run() {
             read_markdown_file,
             open_path,
             reveal_in_finder,
+            forget_project,
+            stop_project,
             open_url,
             warm_skill_cache,
             get_skill_cache_status,

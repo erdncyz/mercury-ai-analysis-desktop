@@ -23,6 +23,57 @@ const GET_SCAN_BYTES: u64 = 25 * 1024 * 1024;
 
 pub struct CodexSource;
 
+/// Delete rollout files whose session cwd is `cwd`. Returns how many were removed.
+pub fn delete_sessions_for_cwd(cwd: &str) -> usize {
+    let wanted = cwd.trim().trim_end_matches('/');
+    if wanted.is_empty() {
+        return 0;
+    }
+    let Some(root) = sessions_root() else {
+        return 0;
+    };
+    let mut removed = 0;
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let is_rollout = path.extension().is_some_and(|e| e == "jsonl")
+                && path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("rollout-"));
+            if !is_rollout {
+                continue;
+            }
+            if rollout_cwd(&path).is_some_and(|found| found.trim_end_matches('/') == wanted) {
+                if std::fs::remove_file(&path).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+    }
+    removed
+}
+
+fn rollout_cwd(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = String::new();
+    reader.read_line(&mut line).ok()?;
+    let value: Value = serde_json::from_str(&line).ok()?;
+    value
+        .get("payload")
+        .and_then(|p| p.get("cwd"))
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string())
+}
+
 fn sessions_root() -> Option<PathBuf> {
     // ccusage convention: CODEX_HOME overrides the data dir.
     let base = std::env::var("CODEX_HOME")

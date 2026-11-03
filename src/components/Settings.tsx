@@ -636,6 +636,14 @@ export default function Settings({ updateInfo, checkingUpdate, onCheckUpdateNow,
               </SettingRow>
             )
           )}
+          <SettingRow label="Quit">
+            <button
+              onClick={() => invoke('quit_app')}
+              className="text-[13px] text-indigo-500 hover:text-indigo-400 transition-colors"
+            >
+              Quit Mercury Ai Analysis
+            </button>
+          </SettingRow>
           <SettingRow label="Source">
             <a href="https://github.com/erdncyz/mercury-ai-analysis-desktop" target="_blank" rel="noopener noreferrer"
               className="text-[13px] text-indigo-500 hover:text-indigo-400 transition-colors flex items-center gap-1">
